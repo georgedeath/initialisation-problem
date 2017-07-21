@@ -19,4 +19,4 @@ Further information on each method can be found by typing ```help(function_name)
 **[George De Ath](https://www.linkedin.com/in/georgedeath/)**
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE) file for details.
