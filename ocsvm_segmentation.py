@@ -107,26 +107,30 @@ def extract_RGB_LBP_features(image, labels, size=5, P=8, R=2):
 
     return feat_descs
     
-def perform_ocsvm_segmentation(image, bbox, gamma=-19, nu=0.250, 
-                               crop_ratio=2, feature_name='RGB'):
+def perform_ocsvm_segmentation(image, bbox, gamma=-19, nu=0.250, crop_ratio=2, 
+                               feature_name='RGB', return_crop_region=False):
     """
     Performs segmentation using a One-Class SVM and RGB/LAB/SIFT/LBP features.
     
     Arguments:
-        image        = MxNxD numpy array containing the image to be segmented.
-        bbox         = array containing bounding box of the form 
-                       [x0, y0, x1, y1, x2, y2, x3, y3].
-        gamma        = RBF kernel’s length-scale - 2**gamma
-        nu           = upper bound on the assumed number of outliers in 
-                       the training data - (0, 1)
-        crop_ratio   = factor to multiply the axis-aligned version of the
-                       bbox by to denote size of area to crop image to.
-        feature_name = Feature descriptor to use, valid options are:
-                       'RGB', 'LAB', 'SIFT', 'LBP'.
+        image              = MxNxD numpy array containing the image to be segmented.
+        bbox               = array containing bounding box of the form 
+                             [x0, y0, x1, y1, x2, y2, x3, y3].
+        gamma              = RBF kernel’s length-scale - 2**gamma
+        nu                 = upper bound on the assumed number of outliers in 
+                             the training data - (0, 1)
+        crop_ratio         = factor to multiply the axis-aligned version of the
+                             bbox by to denote size of area to crop image to.
+        feature_name       = Feature descriptor to use, valid options are:
+                             'RGB', 'LAB', 'SIFT', 'LBP'.
+        return_crop_region = boolean, if True the function also returns a
+                             vector containing the region used for superpixeling.
       
     Output:
-        image_mask = boolean mask containing True for pixels labelled as belonging
-                     to the object, and False otherwise.
+        image_mask       = boolean mask containing True for pixels labelled as 
+                           belonging to the object, and False otherwise.
+        [x0, y0, x1, y1] = start/end points for respective image dimensions used
+                           for superpixeling (OPTIONAL)
     """
 
     bbox = np.array(bbox, dtype='float')
@@ -195,6 +199,9 @@ def perform_ocsvm_segmentation(image, bbox, gamma=-19, nu=0.250,
     image_mask = np.zeros(image.shape[:2], dtype='bool')
     image_mask[c_y0:c_y1, c_x0:c_x1] = mask
 
+    if return_crop_region:
+        return image_mask, [c_x0, c_y0, c_x1, c_y1]
+    
     return image_mask
     
 if __name__ == "__main__":
@@ -206,7 +213,7 @@ if __name__ == "__main__":
     bbox = np.array([376.33, 262.1, 461.85, 205.38,
                      500.77, 264.05, 415.25, 320.77])
                      
-    mask = perform_ocsvm_segmentation(image, bbox, feature_name='LAB')
+    mask, [x0, y0, x1, y1] = perform_ocsvm_segmentation(image, bbox, feature_name='LAB', return_crop_region=True)
     
     # remove pixels from image that are labelled as background
     image_masked = image.copy()
@@ -214,11 +221,18 @@ if __name__ == "__main__":
         image_masked[..., d].flat[~mask.ravel()] = 255
     
     # display original image, segmentation, and segmented image
-    images = [image, mask, image_masked]
+    images = [image[y0:y1, x0:x1, :], mask[y0:y1, x0:x1], image_masked[y0:y1, x0:x1]]
     titles = ['Original image', 'Segmentation', 'Segmented image']
+
+    bbox_pts = np.concatenate((np.reshape(bbox, (-1, 2)), bbox[:2][np.newaxis, :]))
+    bbox_pts -= [x0, y0]
+    
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
     for image, title, a in zip(images, titles, ax.flat):
         a.imshow(image)
+        for i in range(4):
+            a.plot(bbox_pts[i:i+2, 0], bbox_pts[i:i+2, 1], 'c-', lw=2)
         a.set_title(title)
         a.axis('off')
     plt.show()
+

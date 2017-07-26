@@ -63,28 +63,32 @@ def create_scribble_mask(x, y, frame, pct_area_shrink=0.1, pct_area_grow=0.1, wi
 
     return scribble_mask
 
-def perform_alpha_matting(image, bbox, rho_plus=1.2, rho_minus=0.8, 
-                          tau=0.84, lbda=1e-2, crop_ratio=2):
+def perform_alpha_matting(image, bbox, rho_plus=1.2, rho_minus=0.8, tau=0.84, 
+                          lbda=1e-2, crop_ratio=2, return_crop_region=False):
     """
     Performs alpha matting segmentation.
     
     Arguments:
-        image      = MxNxD numpy array containing the image to be segmented.
-        bbox       = array containing bounding box of the form 
-                     [x0, y0, x1, y1, x2, y2, x3, y3].
-        rho_plus   = factor to expand bbox by to label area outside this
-                     as belonging to the background.
-        rho_minus  = factor to contract bbox by to label area inside this
-                     as belonging to the object.
-        tau        = fraction of area of the original bounding box we wish the
-                     alpha matte to occupy.
-        lbda       = ridge regression regularisation term.
-        crop_ratio = factor to multiply the axis-aligned version of the
-                     bbox by to denote size of area to crop image to.
+        image              = MxNxD numpy array containing the image to be segmented.
+        bbox               = array containing bounding box of the form 
+                             [x0, y0, x1, y1, x2, y2, x3, y3].
+        rho_plus           = factor to expand bbox by to label area outside this
+                             as belonging to the background.
+        rho_minus          = factor to contract bbox by to label area inside this
+                             as belonging to the object.
+        tau                = fraction of area of the original bounding box we 
+                             wish the alpha matte to occupy.
+        lbda               = ridge regression regularisation term.
+        crop_ratio         = factor to multiply the axis-aligned version of the
+                             bbox by to denote size of area to crop image to.
+        return_crop_region = boolean, if True the function also returns a
+                             vector containing the region used for segmentation.
                      
     Output:
-        mask = boolean mask containing True for pixels labelled as belonging
-               to the object, and False otherwise.
+        mask             = boolean mask containing True for pixels labelled as 
+                           belonging to the object, and False otherwise.
+        [x0, y0, x1, y1] = start/end points for respective image dimensions used
+                           for superpixeling (OPTIONAL)
     """
     bbox = np.array(bbox, dtype='float')
     if bbox.shape != (8,):
@@ -121,6 +125,9 @@ def perform_alpha_matting(image, bbox, rho_plus=1.2, rho_minus=0.8,
     mask = np.zeros((Ih, Iw), dtype='bool')
     mask[c_y0:c_y1, c_x0:c_x1] = alpha > t
     
+    if return_crop_region:
+        return mask, [c_x0, c_y0, c_x1, c_y1]
+    
     return mask
     
 if __name__ == "__main__":
@@ -132,19 +139,25 @@ if __name__ == "__main__":
     bbox = np.array([334.02, 128.36, 438.19, 188.78,
                      396.39, 260.83, 292.23, 200.41])
                      
-    mask = perform_alpha_matting(image, bbox)
+    mask, [x0, y0, x1, y1] = perform_alpha_matting(image, bbox, return_crop_region=True)
     
     # remove pixels from image that are labelled as background
     image_masked = image.copy()
     for d in range(3):
         image_masked[..., d].flat[~mask.ravel()] = 255
-    
+
     # display original image, segmentation, and segmented image
-    images = [image, mask, image_masked]
-    titles = ['Original image', 'Segmentation', 'Segmented image']
+    images = [image[y0:y1, x0:x1, :], mask[y0:y1, x0:x1], image_masked[y0:y1, x0:x1]]
+    titles = ['Original image (cropped)', 'Segmentation', 'Segmented image']
+    
+    bbox_pts = np.concatenate((np.reshape(bbox, (-1, 2)), bbox[:2][np.newaxis, :]))
+    bbox_pts -= [x0, y0]
+    
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
     for image, title, a in zip(images, titles, ax.flat):
         a.imshow(image)
+        for i in range(4):
+            a.plot(bbox_pts[i:i+2, 0], bbox_pts[i:i+2, 1], 'c-', lw=2)
         a.set_title(title)
         a.axis('off')
     plt.show()
