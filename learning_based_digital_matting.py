@@ -4,6 +4,8 @@
 #
 # Python implementation of:
 #   http://uk.mathworks.com/matlabcentral/fileexchange/31412-learning-based-digital-matting
+#
+# Laplacian calculation adapted from http://github.com/MarcoForte/learning-based-matting (db5417a)
 
 import numpy as np
 from scipy.ndimage.morphology import binary_erosion
@@ -11,10 +13,7 @@ from scipy import sparse
 
 def getC(mask, c):
     scribble_mask = mask != 0
-    mask_area = np.prod(mask.shape)
-    C = c * sparse.diags(scribble_mask.ravel(order='F'), offsets=0, 
-                         shape=(mask_area, mask_area), dtype='float').tocsr()
-    return C
+    return c * sparse.diags(c * scribble_mask.ravel())
 
 def getAlpha_star(mask):
     alpha_star = np.zeros_like(mask, dtype='float')
@@ -22,90 +21,85 @@ def getAlpha_star(mask):
     alpha_star.flat[mask.ravel() < 0] = -1
     return alpha_star
 
-def getLap(imdata, winsz, mask, _lambda):
-    # convert to square window if only supplied side
-    if type(winsz) == int:
-        winsz = np.array([winsz, winsz])
-        
-    # normalize image data
-    imdata = imdata.astype('float') / 255
-    
-    ih, iw, d = imdata.shape
-    pixInds = np.reshape(np.arange(ih*iw), (ih, iw), order="F")
+def getLapCoefRow(win, numPixInWindow, d, _lambda):
+    win = np.concatenate((win, np.ones((win.shape[0], numPixInWindow, 1))), axis=2)
 
-    numPixInWindow = np.prod(winsz)
+    I = np.tile(np.eye(numPixInWindow), (win.shape[0], 1, 1))
+    I[:, -1, -1] = 0
+
+    winTProd = np.einsum('...ij,...kj ->...ik', win, win)
+    winTProd_reg_inv = np.linalg.inv(winTProd + I*_lambda)
+
+    F = np.einsum('...ij,...jk->...ik', winTProd, winTProd_reg_inv)
+    I_F = np.eye(numPixInWindow) - F
+    
+    return np.einsum('...ji,...jk->...ik', I_F, I_F )
+    
+def getLap(imdata, mask, winsz, _lambda):
+    ih, iw, d = imdata.shape
+
+    # unravel the image to be (npixels, d)
+    ravelImg = imdata.reshape(ih*iw, d)
+    
+    ravelImg = ravelImg / 255 # normalise image
+    
+    numPixInWindow = winsz**2
     numPixInWindowSQ = numPixInWindow**2
-    halfwinsz= ((winsz-1)/2).astype('int')
-    
-    # erode scribble mask by window size
+    halfwinsz = winsz//2
+
     scribble_mask = mask != 0
-    
-    struct_ele = np.ones((max(winsz), max(winsz)))
-    scribble_mask = binary_erosion(scribble_mask, struct_ele)
-    
-    # storage for lap values
-    numPix4Training = np.sum(1-scribble_mask[halfwinsz[0]+1:-halfwinsz[0], 
-                                             halfwinsz[1]+1:-halfwinsz[1]])
-    numNonzeroValue = numPix4Training * numPixInWindow**2
-    
+    numPix4Training = np.sum(1-scribble_mask[halfwinsz:-halfwinsz, 
+                                             halfwinsz:-halfwinsz])
+    numNonzeroValue = numPix4Training*numPixInWindowSQ
+
     row_inds = np.zeros(numNonzeroValue)
     col_inds = np.zeros(numNonzeroValue)
-    vals = np.zeros(numNonzeroValue, dtype='float64')
-    
-    # repeat on each legal pixel
+    vals = np.zeros(numNonzeroValue)
+
+    # create matrix of pixel indices for each window
+    A = np.reshape(np.arange(ih*iw), (ih, iw))
+    inds_shape = (A.shape[0] - winsz + 1, A.shape[1] - winsz + 1, winsz, winsz)
+    inds_strides = (A.strides[0], A.strides[1]) + A.strides
+    pixInds = np.lib.stride_tricks.as_strided(A, shape=inds_shape, strides=inds_strides)
+    pixInds = np.reshape(pixInds, (ih - 2*halfwinsz, iw - 2*halfwinsz, numPixInWindow))
+
     offset = 0
-    
-    winData = np.zeros((winsz[0], winsz[1], d))
-    win_resized = np.zeros((numPixInWindow, d))
-    
-    for i in range(halfwinsz[0], ih-halfwinsz[0]):
-        for j in range(halfwinsz[1], iw-halfwinsz[1]):
 
-            if scribble_mask[i, j]:
-                continue
+    for i in range(ih - 2*halfwinsz):
+        # select indices of all windows centred on the i'th row
+        inds_o = pixInds[i, :]
+        
+        # select only those with an unknown label - i.e. 0
+        inds = inds_o[~scribble_mask[i+halfwinsz, halfwinsz:iw-halfwinsz]]
+        
+        # if we don't have any then skip to the next row
+        if not np.any(inds):
+            continue
+          
+        # calculate the Laplacian coeffs
+        win = ravelImg[inds]
+        lapcoeff = getLapCoefRow(win, numPixInWindow, d, _lambda)
 
-            # calculate indices of pixels to place in the Laplacian
-            win_inds = pixInds[i-halfwinsz[0]:i+halfwinsz[0]+1,
-                               j-halfwinsz[1]:j+halfwinsz[1]+1].ravel(order='F')
-            row_inds[offset:offset+numPixInWindowSQ] = np.matlib.repmat(win_inds, 1, numPixInWindow)
-            col_inds[offset:offset+numPixInWindowSQ] = np.matlib.repmat(win_inds, numPixInWindow, 1).ravel(order='F')
-
-            # calculate the Laplacian on a window
-            winData[:] = imdata[i-halfwinsz[0]:i+halfwinsz[0]+1, j-halfwinsz[1]:j+halfwinsz[1]+1, :]
-            win_resized[:] = np.reshape(winData, (numPixInWindow, d), order="F")
-            vals[offset:offset+numPixInWindowSQ] = compLapCoeff(win_resized, numPixInWindow, d, _lambda).ravel(order='F')
-
-            offset += numPixInWindowSQ
-
+        # store pixel indices and their corresponding Laplacian value
+        step = win.shape[0]*numPixInWindowSQ
+        vals[offset:offset+step] = lapcoeff.ravel()
+        row_inds[offset:offset+step] = np.repeat(inds, numPixInWindow).ravel()
+        col_inds[offset:offset+step] = np.tile(inds, numPixInWindow).ravel()
+        offset += step
+        
     return sparse.csr_matrix((vals, (row_inds, col_inds)), shape=(ih*iw, ih*iw))
     
-def compLapCoeff(win, numPixInWindowSQ, d, _lambda):
-    Xi = np.empty((numPixInWindowSQ, d+1))
-    Xi[:, :-1] = win
-    Xi[:, -1:] = 1
-
-    I = np.eye(numPixInWindowSQ)
-    I[-1, -1] = 0
-    
-    X = Xi @ Xi.T
-
-    # need the transpose here as matrix is transpose of answer in Matlab
-    #F = (np.linalg.inv(X+(_lambda*I)) @ X).T  <-- slower
-    F = np.linalg.solve(a=(X+(_lambda*I)).T, b=X.T).T
-    
-    I_F = np.eye(numPixInWindowSQ) - F
-    return I_F.T @ I_F
 
 def solveQuadOpt(L, C, alpha_star):
     lbda = 1e-9 # different lambda to the one used to calc the lap
                 # this one regularises the alpha calculation
 
-    D = sparse.eye(L.shape[0], L.shape[1]).tocsr()
+    D = sparse.eye(L.shape[0])
     
-    alpha = sparse.linalg.spsolve(L + C + (D*lbda), C @ alpha_star.ravel(order='F'))
-    alpha = np.reshape(alpha, ((alpha_star.shape[0], alpha_star.shape[1])), order='F')
+    alpha = sparse.linalg.spsolve(L + C + D*lbda, C @ alpha_star.ravel())
+    alpha = np.reshape(alpha, alpha_star.shape)
     
-    # rescale alpha to ~ [0, 1]
+    # rescale alpha to ~ [0, 1] if using [-1, 0, 1] as labels
     if np.min(alpha_star) == -1:
         alpha = alpha/2 + 0.5
     
@@ -117,7 +111,8 @@ def learningBasedMatting(frame, scribble_mask, winsz=3, c=800, _lambda=1e-07):
     if len(frame.shape) == 2:
         frame = np.reshape(frame, (*frame.shape, 1))
     
-    L = getLap(frame, winsz, scribble_mask, _lambda)
-    alpha = solveQuadOpt(L, getC(scribble_mask, c), getAlpha_star(scribble_mask))
-    
-    return alpha
+    C = getC(scribble_mask, c)
+    alpha_star = getAlpha_star(scribble_mask)
+    L = getLap(frame, scribble_mask, winsz, _lambda)
+
+    return solveQuadOpt(L, C, alpha_star)
