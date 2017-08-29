@@ -24,8 +24,8 @@ This repository contains the three Python 3.6 implementations of the techniques
 (LBDM, SBBM, OC-SVM) used in the paper.
 
 ## Prerequisites
-+ All techniques: matplotlib, numpy, scipy, skimage
-+ OC-SVM: sklearn, vlfeat-ctypes: <https://github.com/dougalsutherland/vlfeat-ctypes>
++ **All techniques**: matplotlib, numpy, scipy, skimage
++ **OC-SVM**: sklearn, vlfeat-ctypes: <https://github.com/dougalsutherland/vlfeat-ctypes>
 
 ## Usage
 Information on each method can be found by typing ```help(function_name)``` 
